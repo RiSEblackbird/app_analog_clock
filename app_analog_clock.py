@@ -306,7 +306,7 @@ def toggle_clock_size():
 
 
 def restart_application():
-    global root, canvas, header_frame, datetime_label
+    global root, canvas, header_frame, datetime_label, size_button, color_button, auto_checkbutton, auto_var
 
     # アプリケーションの再起動
     root = tk.Tk()

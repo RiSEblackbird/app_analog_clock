@@ -25,6 +25,13 @@ FONT_SIZE = 32
 clock_size = 1  # 時計のサイズモード
 factor = 1.0
 
+# テーマ/更新管理用のグローバル
+is_dark_theme = False
+update_job = None
+datetime_job = None
+header_frame = None
+datetime_label = None
+
 # 定数としてウィンドウ位置情報を保存するファイル名を設定
 POSITION_FILE = 'window_position_app_analog_clock.csv'
 
@@ -83,6 +90,82 @@ def restore_position(root):
         print("位置情報ファイルが見つかりません。")
 
 
+def get_theme_colors():
+    """
+    現在のテーマに応じた色設定を返す
+    """
+    if is_dark_theme:
+        return {
+            'bg': '#2b2b2b',
+            'canvas_bg': 'black',
+            'line_color': 'white',
+            'number_color': '#dddddd',
+            'tick_color': '#bbbbbb',
+            'circle_outline': 'white',
+            'center_color': 'white',
+        }
+    else:
+        return {
+            'bg': 'white',
+            'canvas_bg': 'white',
+            'line_color': 'black',
+            'number_color': 'gray',
+            'tick_color': 'gray',
+            'circle_outline': 'black',
+            'center_color': 'black',
+        }
+
+
+def apply_theme_styles():
+    """
+    ルート/ヘッダ/キャンバスの色をテーマに合わせて適用
+    """
+    colors = get_theme_colors()
+    try:
+        root.config(bg=colors['bg'])
+    except Exception:
+        pass
+    try:
+        if header_frame is not None:
+            header_frame.config(bg=colors['bg'])
+    except Exception:
+        pass
+    try:
+        if datetime_label is not None:
+            datetime_label.config(bg=colors['bg'], fg=colors['line_color'])
+    except Exception:
+        pass
+    try:
+        if canvas is not None:
+            canvas.config(bg=colors['canvas_bg'])
+    except Exception:
+        pass
+
+
+def redraw_clock():
+    """
+    針更新のafterを一旦解除してから再描画
+    """
+    global update_job
+    if update_job is not None:
+        try:
+            canvas.after_cancel(update_job)
+        except Exception:
+            pass
+        update_job = None
+    draw_clock(canvas)
+
+
+def toggle_theme():
+    """
+    ダーク/ライトテーマを切り替える
+    """
+    global is_dark_theme
+    is_dark_theme = not is_dark_theme
+    apply_theme_styles()
+    redraw_clock()
+
+
 def toggle_clock_size():
     global factor, clock_size, root
     clock_size = (clock_size % 4) + 1
@@ -103,7 +186,7 @@ def toggle_clock_size():
 
 
 def restart_application():
-    global root, canvas
+    global root, canvas, header_frame, datetime_label
 
     # アプリケーションの再起動
     root = tk.Tk()
@@ -118,18 +201,34 @@ def restart_application():
     # ウィンドウサイズと中心の再計算
     apply_factor_settings()
 
-    # サイズ変更ボタンをウィンドウの左上に配置
-    size_button = tk.Button(root, text="サイズ変更", command=toggle_clock_size)
-    size_button.pack(side='top', anchor='nw')
+    # ヘッダフレーム（ボタン/デジタル時計）
+    header_frame = tk.Frame(root)
+    header_frame.pack(side='top', anchor='nw')
+
+    size_button = tk.Button(header_frame, text="サイズ変更", command=toggle_clock_size)
+    size_button.pack(side='left')
+
+    color_button = tk.Button(header_frame, text="カラー変更", command=toggle_theme)
+    color_button.pack(side='left')
 
     # 時計の文字盤を描画
-    canvas = tk.Canvas(root, width=400, height=400, bg='white')
+    canvas = tk.Canvas(root, width=400, height=400, bg=get_theme_colors()['canvas_bg'])
     canvas.pack(expand=True, fill=tk.BOTH)
+
+    # テーマ適用
+    apply_theme_styles()
 
     draw_clock(canvas)
 
     # 位置情報の復元
     restore_position(root)
+
+    # デジタル日時ラベル開始（フォントはfactorに追従）
+    datetime_font_size = max(10, int(12 * factor))
+    datetime_label = tk.Label(header_frame, text="", font=("Helvetica", datetime_font_size))
+    datetime_label.pack(side='left')
+    apply_theme_styles()
+    update_datetime_label()
 
     root.protocol("WM_DELETE_WINDOW", on_close)
     root.mainloop()
@@ -167,11 +266,17 @@ def draw_ticks(canvas):
         start_y = CENTER[1] + (CLOCK_RADIUS - tick_length) * math.sin(angle)
         end_x = CENTER[0] + CLOCK_RADIUS * math.cos(angle)
         end_y = CENTER[1] + CLOCK_RADIUS * math.sin(angle)
-        canvas.create_line(start_x, start_y, end_x, end_y, fill='gray', width=tick_width)
+        canvas.create_line(start_x, start_y, end_x, end_y, fill=get_theme_colors()['tick_color'], width=tick_width)
 
 def draw_clock(canvas):
     canvas.delete("all")  # 既存の描画をすべて削除
-    canvas.create_oval(CENTER[0] - CLOCK_RADIUS, CENTER[1] - CLOCK_RADIUS, CENTER[0] + CLOCK_RADIUS, CENTER[1] + CLOCK_RADIUS)
+    canvas.create_oval(
+        CENTER[0] - CLOCK_RADIUS,
+        CENTER[1] - CLOCK_RADIUS,
+        CENTER[0] + CLOCK_RADIUS,
+        CENTER[1] + CLOCK_RADIUS,
+        outline=get_theme_colors()['circle_outline']
+    )
     draw_numbers(canvas)
     draw_ticks(canvas)  
     draw_center_dot(canvas)
@@ -182,10 +287,29 @@ def draw_center_dot(canvas):
     時計の中心に小さな黒い丸を描画する関数
     """
     dot_radius = 7  # 中心点の半径
-    canvas.create_oval(CENTER[0] - dot_radius, CENTER[1] - dot_radius, CENTER[0] + dot_radius, CENTER[1] + dot_radius, fill='black', outline='black')
+    colors = get_theme_colors()
+    canvas.create_oval(
+        CENTER[0] - dot_radius,
+        CENTER[1] - dot_radius,
+        CENTER[0] + dot_radius,
+        CENTER[1] + dot_radius,
+        fill=colors['center_color'],
+        outline=colors['center_color']
+    )
 
 # アプリケーションの終了時の処理をカスタマイズする
 def on_close():
+    global datetime_job, update_job
+    try:
+        if datetime_job is not None:
+            root.after_cancel(datetime_job)
+    except Exception:
+        pass
+    try:
+        if update_job is not None:
+            canvas.after_cancel(update_job)
+    except Exception:
+        pass
     save_position(root)  # ウィンドウの位置を保存
     root.destroy()  # ウィンドウを破壊する
 
@@ -201,7 +325,7 @@ def draw_hand(canvas, center, length, angle, width):
     angle_rad = math.radians(angle)
     end_x = center[0] + length * math.sin(angle_rad)
     end_y = center[1] - length * math.cos(angle_rad)
-    return canvas.create_line(center[0], center[1], end_x, end_y, width=width, fill='black')
+    return canvas.create_line(center[0], center[1], end_x, end_y, width=width, fill=get_theme_colors()['line_color'])
 
 def update_clock(canvas, hand_ids):
     """
@@ -228,7 +352,8 @@ def update_clock(canvas, hand_ids):
         draw_hand(canvas, CENTER, LENGTH_SECOND_HAND, second_angle, width=3)
     ]
 
-    canvas.after(UPDATE_INTERVAL, update_clock, canvas, new_hand_ids)  # 1秒後に再度更新
+    global update_job
+    update_job = canvas.after(UPDATE_INTERVAL, update_clock, canvas, new_hand_ids)  # 1秒後に再度更新
 
 
 def draw_numbers(canvas):
@@ -239,7 +364,22 @@ def draw_numbers(canvas):
         angle = math.radians(i * 30 - 90)
         x = CENTER[0] + NUMBER_DISTANCE * math.cos(angle)
         y = CENTER[1] + NUMBER_DISTANCE * math.sin(angle)
-        canvas.create_text(x, y, text=str(i), font=("Helvetica", FONT_SIZE), fill="gray")
+        canvas.create_text(x, y, text=str(i), font=("Helvetica", FONT_SIZE), fill=get_theme_colors()['number_color'])
+
+
+def update_datetime_label():
+    """
+    ヘッダ部の日時デジタル表示を1秒ごとに更新
+    """
+    global datetime_job
+    try:
+        if datetime_label is not None:
+            now_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+            datetime_label.config(text=now_str)
+        datetime_job = root.after(UPDATE_INTERVAL, update_datetime_label)
+    except Exception:
+        # ウィンドウ破棄などで例外が出る場合は黙って無視
+        pass
 
 
 # メイン処理
@@ -251,14 +391,28 @@ try:
     restore_position(root)
     root.protocol("WM_DELETE_WINDOW", on_close)  # 終了時処理の設定
 
-    # 「サイズ変更」ボタンの配置
-    size_button = tk.Button(root, text="サイズ変更", command=toggle_clock_size)
-    size_button.pack(side='top', anchor='nw')
+    # ヘッダフレーム（ボタン/デジタル時計）
+    header_frame = tk.Frame(root)
+    header_frame.pack(side='top', anchor='nw')
+
+    size_button = tk.Button(header_frame, text="サイズ変更", command=toggle_clock_size)
+    size_button.pack(side='left')
+
+    color_button = tk.Button(header_frame, text="カラー変更", command=toggle_theme)
+    color_button.pack(side='left')
 
     # 時計の文字盤を描画
-    canvas = tk.Canvas(root, width=400, height=400, bg='white')
+    canvas = tk.Canvas(root, width=400, height=400, bg=get_theme_colors()['canvas_bg'])
     canvas.pack(expand=True, fill=tk.BOTH)
+    apply_theme_styles()
     draw_clock(canvas)
+
+    # デジタル日時ラベル開始
+    datetime_font_size = max(10, int(12 * factor))
+    datetime_label = tk.Label(header_frame, text="", font=("Helvetica", datetime_font_size))
+    datetime_label.pack(side='left')
+    apply_theme_styles()
+    update_datetime_label()
 
     root.mainloop()
 

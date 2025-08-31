@@ -9,6 +9,8 @@ import time
 import os
 import socket
 import csv
+import ctypes
+from ctypes import wintypes
 
 # 定数定義
 WINDOW_SIZE = "400x420"
@@ -20,6 +22,7 @@ LENGTH_HOUR_HAND = 100
 NUMBER_DISTANCE = 155  # 中心から数字までの距離
 UPDATE_INTERVAL = 1000  # 1秒ごとに更新
 FONT_SIZE = 32
+AUTO_CHECK_INTERVAL_MS = 60000  # Auto切替のチェック間隔（1分）
 
 # 変更可能な定数
 clock_size = 1  # 時計のサイズモード
@@ -27,10 +30,16 @@ factor = 1.0
 
 # テーマ/更新管理用のグローバル
 is_dark_theme = False
+is_auto_theme = True  # デフォルトON
 update_job = None
 datetime_job = None
+auto_job = None
 header_frame = None
 datetime_label = None
+color_button = None
+auto_checkbutton = None
+auto_var = None
+size_button = None
 
 # 定数としてウィンドウ位置情報を保存するファイル名を設定
 POSITION_FILE = 'window_position_app_analog_clock.csv'
@@ -103,6 +112,13 @@ def get_theme_colors():
             'tick_color': '#bbbbbb',
             'circle_outline': 'white',
             'center_color': 'white',
+            'button_bg': '#3a3a3a',
+            'button_fg': '#f0f0f0',
+            'button_active_bg': '#4a4a4a',
+            'button_active_fg': '#ffffff',
+            'check_bg': '#2b2b2b',
+            'check_fg': '#f0f0f0',
+            'check_select_color': '#4a90e2',
         }
     else:
         return {
@@ -113,6 +129,13 @@ def get_theme_colors():
             'tick_color': 'gray',
             'circle_outline': 'black',
             'center_color': 'black',
+            'button_bg': '#f0f0f0',
+            'button_fg': 'black',
+            'button_active_bg': '#e0e0e0',
+            'button_active_fg': 'black',
+            'check_bg': 'white',
+            'check_fg': 'black',
+            'check_select_color': '#1976d2',
         }
 
 
@@ -125,6 +148,11 @@ def apply_theme_styles():
         root.config(bg=colors['bg'])
     except Exception:
         pass
+    # タイトルバー（Windows）
+    try:
+        set_titlebar_dark_mode(is_dark_theme)
+    except Exception:
+        pass
     try:
         if header_frame is not None:
             header_frame.config(bg=colors['bg'])
@@ -133,6 +161,22 @@ def apply_theme_styles():
     try:
         if datetime_label is not None:
             datetime_label.config(bg=colors['bg'], fg=colors['line_color'])
+    except Exception:
+        pass
+    # ボタン系
+    try:
+        if size_button is not None:
+            size_button.config(bg=colors['button_bg'], fg=colors['button_fg'], activebackground=colors['button_active_bg'], activeforeground=colors['button_active_fg'])
+    except Exception:
+        pass
+    try:
+        if color_button is not None:
+            color_button.config(bg=colors['button_bg'], fg=colors['button_fg'], activebackground=colors['button_active_bg'], activeforeground=colors['button_active_fg'])
+    except Exception:
+        pass
+    try:
+        if auto_checkbutton is not None:
+            auto_checkbutton.config(bg=colors['check_bg'], fg=colors['check_fg'], activebackground=colors['button_active_bg'], activeforeground=colors['button_active_fg'], selectcolor=colors['check_select_color'])
     except Exception:
         pass
     try:
@@ -164,6 +208,82 @@ def toggle_theme():
     is_dark_theme = not is_dark_theme
     apply_theme_styles()
     redraw_clock()
+
+
+def set_titlebar_dark_mode(enable):
+    """
+    Windows 10 以降でタイトルバーのダークモードを切り替える。
+    失敗してもアプリは継続する（OSテーマ依存）。
+    """
+    try:
+        hwnd = root.winfo_id()
+        DWMWA_USE_IMMERSIVE_DARK_MODE = 20  # Windows 10 1809+
+        # 型定義
+        DwmSetWindowAttribute = ctypes.windll.dwmapi.DwmSetWindowAttribute
+        DwmSetWindowAttribute.argtypes = [wintypes.HWND, wintypes.DWORD, wintypes.LPCVOID, wintypes.DWORD]
+        DwmSetWindowAttribute.restype = wintypes.HRESULT
+
+        value = wintypes.BOOL(1 if enable else 0)
+        DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ctypes.byref(value), ctypes.sizeof(value))
+    except Exception:
+        # 非Windowsや未対応環境では無視
+        pass
+
+
+def is_dark_time(now=None):
+    """
+    06:00〜18:29:59 を通常（ライト）、18:30〜05:59:59 をダークとする
+    """
+    if now is None:
+        now = time.localtime()
+    current_minutes = now.tm_hour * 60 + now.tm_min
+    # ダーク: 18:30(1110分)〜23:59, および 00:00〜05:59(359分)
+    return current_minutes >= (18 * 60 + 30) or current_minutes < (6 * 60)
+
+
+def apply_auto_theme_now():
+    """
+    Autoモードが有効なとき、現在時刻に応じてテーマを適用
+    """
+    if not is_auto_theme:
+        return
+    should_dark = is_dark_time()
+    global is_dark_theme
+    if is_dark_theme != should_dark:
+        is_dark_theme = should_dark
+        apply_theme_styles()
+        redraw_clock()
+
+
+def auto_theme_loop():
+    """
+    一定間隔で自動テーマ切替をチェック
+    """
+    global auto_job
+    if is_auto_theme:
+        apply_auto_theme_now()
+        try:
+            auto_job = root.after(AUTO_CHECK_INTERVAL_MS, auto_theme_loop)
+        except Exception:
+            pass
+
+
+def on_auto_toggle():
+    """
+    AutoモードのON/OFF切替ハンドラ
+    """
+    global is_auto_theme, auto_job
+    is_auto_theme = bool(auto_var.get())
+    if is_auto_theme:
+        apply_auto_theme_now()
+        auto_theme_loop()
+    else:
+        try:
+            if auto_job is not None:
+                root.after_cancel(auto_job)
+        except Exception:
+            pass
+        auto_job = None
 
 
 def toggle_clock_size():
@@ -205,30 +325,38 @@ def restart_application():
     header_frame = tk.Frame(root)
     header_frame.pack(side='top', anchor='nw')
 
+    # デジタル日時ラベル（左端）
+    datetime_font_size = max(10, int(12 * factor))
+    datetime_label = tk.Label(header_frame, text="", font=("Helvetica", datetime_font_size))
+    datetime_label.pack(side='left')
+
     size_button = tk.Button(header_frame, text="サイズ変更", command=toggle_clock_size)
     size_button.pack(side='left')
 
     color_button = tk.Button(header_frame, text="カラー変更", command=toggle_theme)
     color_button.pack(side='left')
 
+    # Autoトグル（カラー変更ボタンの右側）
+    auto_var = tk.BooleanVar(value=is_auto_theme)
+    auto_checkbutton = tk.Checkbutton(header_frame, text="Auto", variable=auto_var, command=on_auto_toggle)
+    auto_checkbutton.pack(side='left')
+
     # 時計の文字盤を描画
     canvas = tk.Canvas(root, width=400, height=400, bg=get_theme_colors()['canvas_bg'])
     canvas.pack(expand=True, fill=tk.BOTH)
-
-    # テーマ適用
-    apply_theme_styles()
 
     draw_clock(canvas)
 
     # 位置情報の復元
     restore_position(root)
 
-    # デジタル日時ラベル開始（フォントはfactorに追従）
-    datetime_font_size = max(10, int(12 * factor))
-    datetime_label = tk.Label(header_frame, text="", font=("Helvetica", datetime_font_size))
-    datetime_label.pack(side='left')
+    # テーマ適用 & デジタル日時開始
     apply_theme_styles()
     update_datetime_label()
+
+    # Autoモードの初回適用とスケジューリング
+    apply_auto_theme_now()
+    auto_theme_loop()
 
     root.protocol("WM_DELETE_WINDOW", on_close)
     root.mainloop()
@@ -299,7 +427,7 @@ def draw_center_dot(canvas):
 
 # アプリケーションの終了時の処理をカスタマイズする
 def on_close():
-    global datetime_job, update_job
+    global datetime_job, update_job, auto_job
     try:
         if datetime_job is not None:
             root.after_cancel(datetime_job)
@@ -308,6 +436,11 @@ def on_close():
     try:
         if update_job is not None:
             canvas.after_cancel(update_job)
+    except Exception:
+        pass
+    try:
+        if auto_job is not None:
+            root.after_cancel(auto_job)
     except Exception:
         pass
     save_position(root)  # ウィンドウの位置を保存
@@ -395,24 +528,36 @@ try:
     header_frame = tk.Frame(root)
     header_frame.pack(side='top', anchor='nw')
 
+    # デジタル日時ラベル（左端）
+    datetime_font_size = max(10, int(12 * factor))
+    datetime_label = tk.Label(header_frame, text="", font=("Helvetica", datetime_font_size))
+    datetime_label.pack(side='left')
+
     size_button = tk.Button(header_frame, text="サイズ変更", command=toggle_clock_size)
     size_button.pack(side='left')
 
     color_button = tk.Button(header_frame, text="カラー変更", command=toggle_theme)
     color_button.pack(side='left')
 
+    # Autoトグル（カラー変更ボタンの右側）
+    auto_var = tk.BooleanVar(value=is_auto_theme)
+    auto_checkbutton = tk.Checkbutton(header_frame, text="Auto", variable=auto_var, command=on_auto_toggle)
+    auto_checkbutton.pack(side='left')
+
     # 時計の文字盤を描画
     canvas = tk.Canvas(root, width=400, height=400, bg=get_theme_colors()['canvas_bg'])
     canvas.pack(expand=True, fill=tk.BOTH)
+
+    # テーマ適用 & デジタル日時開始（タイトルバーも反映）
+    apply_theme_styles()
+    # テーマ適用 & デジタル日時開始（タイトルバーも反映）
     apply_theme_styles()
     draw_clock(canvas)
-
-    # デジタル日時ラベル開始
-    datetime_font_size = max(10, int(12 * factor))
-    datetime_label = tk.Label(header_frame, text="", font=("Helvetica", datetime_font_size))
-    datetime_label.pack(side='left')
-    apply_theme_styles()
     update_datetime_label()
+
+    # Autoモードの初回適用とスケジューリング
+    apply_auto_theme_now()
+    auto_theme_loop()
 
     root.mainloop()
 

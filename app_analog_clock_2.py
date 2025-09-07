@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# アプリ名: 0. アナログ時計2
 """PySide6 アナログ時計アプリ"""
 
 import sys
@@ -7,10 +8,10 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QPoint
-from PySide6.QtGui import QPainter, QPen, QColor, QFont
+from PySide6.QtGui import QPainter, QPen, QColor, QFont, QFontMetrics
 from PySide6.QtWidgets import (
     QApplication, QWidget, QMainWindow, QLabel, QPushButton,
-    QCheckBox, QHBoxLayout, QVBoxLayout
+    QCheckBox, QHBoxLayout, QVBoxLayout, QLayout
 )
 
 # ---------------------- 定数 ----------------------
@@ -30,13 +31,15 @@ LIGHT_THEME = {
     "bg": "#ffffff",
     "line": "#000000",
     "number": "#000000",
-    "tick": "#666666"
+    "tick": "#666666",
+    "second": "#ff0000"
 }
 DARK_THEME = {
     "bg": "#2b2b2b",
     "line": "#ffffff",
     "number": "#dddddd",
-    "tick": "#bbbbbb"
+    "tick": "#bbbbbb",
+    "second": "#ff4d4d"
 }
 
 # ---------------------- アナログ時計ウィジェット ----------------------
@@ -45,6 +48,7 @@ class ClockWidget(QWidget):
         super().__init__(parent)
         self.factor = factor
         self.theme = LIGHT_THEME
+        self.setMinimumSize(WINDOW_SIZE, WINDOW_SIZE)
         self.setFixedSize(int(WINDOW_SIZE * factor), int(WINDOW_SIZE * factor))
 
         self.timer = QTimer(self)
@@ -53,7 +57,7 @@ class ClockWidget(QWidget):
 
     def set_theme(self, theme):
         self.theme = theme
-        self.setStyleSheet(f"background:{theme['bg']}")
+        self.setStyleSheet(f"background-color:{theme['bg']}")
         self.update()
 
     def resize_by_factor(self, factor):
@@ -65,6 +69,7 @@ class ClockWidget(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
+        # factor に基づきスケール（描画とウィジェットサイズの両方で一貫）
         painter.scale(self.factor, self.factor)
 
         pen = QPen(QColor(self.theme["line"]))
@@ -72,13 +77,36 @@ class ClockWidget(QWidget):
         painter.setPen(pen)
         painter.drawEllipse(CENTER, CLOCK_RADIUS, CLOCK_RADIUS)
 
+        # 目盛り（秒/分）を描画（60分割。5分毎は長く太く）
+        tick_pen = QPen(QColor(self.theme["tick"]))
+        for i in range(60):
+            is_five = (i % 5 == 0)
+            tick_len = 10 if is_five else 6
+            tick_width = 3 if is_five else 1
+            tick_pen.setWidth(tick_width)
+            painter.setPen(tick_pen)
+            angle = math.radians(i * 6)
+            # Qtの座標系は右が+X、下が+Y。
+            # 円周上の点: (cx + r*cos, cy + r*sin)
+            start_x = CENTER.x() + (CLOCK_RADIUS - tick_len) * math.cos(angle)
+            start_y = CENTER.y() + (CLOCK_RADIUS - tick_len) * math.sin(angle)
+            end_x = CENTER.x() + CLOCK_RADIUS * math.cos(angle)
+            end_y = CENTER.y() + CLOCK_RADIUS * math.sin(angle)
+            painter.drawLine(int(start_x), int(start_y), int(end_x), int(end_y))
+
         painter.setPen(QColor(self.theme["number"]))
-        painter.setFont(QFont("Helvetica", FONT_SIZE))
+        font = QFont("Helvetica", FONT_SIZE)
+        painter.setFont(font)
+        metrics = painter.fontMetrics()
         for i in range(1, 13):
             angle = math.radians(i * 30 - 90)
             x = CENTER.x() + NUMBER_DISTANCE * math.cos(angle)
-            y = CENTER.y() + NUMBER_DISTANCE * math.sin(angle) + FONT_SIZE/3
-            painter.drawText(int(x-10), int(y), str(i))
+            y = CENTER.y() + NUMBER_DISTANCE * math.sin(angle)
+            text = str(i)
+            w = metrics.horizontalAdvance(text)
+            h = metrics.height()
+            # 中心 (x,y) にテキストを配置するため、左上原点を補正
+            painter.drawText(int(x - w/2), int(y + h/2 - metrics.descent()), text)
 
         now = time.localtime()
         second = now.tm_sec
@@ -87,13 +115,9 @@ class ClockWidget(QWidget):
 
         self.draw_hand(painter, hour * 30, LENGTH_HOUR_HAND, 8)
         self.draw_hand(painter, minute * 6, LENGTH_MINUTE_HAND, 5)
+        self.draw_hand(painter, second * 6, LENGTH_SECOND_HAND, 2, color=self.theme["second"])
 
-        pen.setColor(QColor("#ff0000"))
-        pen.setWidth(2)
-        painter.setPen(pen)
-        self.draw_hand(painter, second * 6, LENGTH_SECOND_HAND, 2)
-
-    def draw_hand(self, painter, angle_deg, length, width):
+    def draw_hand(self, painter, angle_deg, length, width, color=None):
         angle = math.radians(angle_deg)
         end = QPoint(
             CENTER.x() + length * math.sin(angle),
@@ -101,7 +125,7 @@ class ClockWidget(QWidget):
         )
         pen = painter.pen()
         pen.setWidth(width)
-        pen.setColor(QColor(self.theme["line"]))
+        pen.setColor(QColor(color if color else self.theme["line"]))
         painter.setPen(pen)
         painter.drawLine(CENTER, end)
 
@@ -128,21 +152,25 @@ class MainWindow(QMainWindow):
         self.auto_checkbox.stateChanged.connect(self.on_auto_changed)
 
         header = QHBoxLayout()
-        header.addWidget(self.digital)
+        # サイズ変更ボタンをデジタル時計の左側に配置
         header.addWidget(self.size_button)
+        header.addWidget(self.digital)
         header.addWidget(self.color_button)
         header.addWidget(self.auto_checkbox)
 
         layout = QVBoxLayout()
+        layout.setSizeConstraint(QLayout.SetDefaultConstraint)
         layout.addLayout(header)
         layout.addWidget(self.clock)
 
-        container = QWidget()
-        container.setLayout(layout)
-        self.setCentralWidget(container)
+        self.container = QWidget()
+        self.container.setObjectName("central")
+        self.container.setLayout(layout)
+        self.setCentralWidget(self.container)
 
         self.setWindowTitle("アナログ時計")
-        self.resize(self.clock.width(), self.clock.height() + 40)
+        self.apply_ui_scale()
+        self.resize_to_content()
 
         self.update_timer = QTimer(self)
         self.update_timer.timeout.connect(self.update_datetime_label)
@@ -166,23 +194,71 @@ class MainWindow(QMainWindow):
 
     def toggle_size(self):
         factors = [1.0, 1.5, 2.0, 2.5]
-        idx = (factors.index(self.factor) + 1) % len(factors)
+        # 近似一致でインデックスを求める（浮動小数の誤差対策）
+        def nearest_index(val):
+            diffs = [abs(val - f) for f in factors]
+            return diffs.index(min(diffs))
+        idx = (nearest_index(self.factor) + 1) % len(factors)
         self.factor = factors[idx]
         self.save_factor()
         self.clock.resize_by_factor(self.factor)
-        self.resize(self.clock.width(), self.clock.height() + 40)
+        self.apply_ui_scale()
+        self.resize_to_content()
+        # OSの最小サイズ制約で縮まらないことがあるため二度実行
+        self.resize_to_content()
+        self.log_state("[サイズ変更]")
 
     # -------- テーマ関連 --------
     def toggle_theme(self):
         self.is_dark_theme = not self.is_dark_theme
         self.apply_theme()
+        self.log_state("[カラー変更]")
 
     def apply_theme(self):
         theme = DARK_THEME if self.is_dark_theme else LIGHT_THEME
         self.clock.set_theme(theme)
-        palette = self.palette()
-        palette.setColor(self.backgroundRole(), QColor(theme["bg"]))
-        self.setPalette(palette)
+        # スタイルシートで中央ウィジェット配下にテーマを適用
+        style = (
+            f"QWidget#central {{ background-color: {theme['bg']}; color: {theme['number']}; }}"
+            f" QLabel {{ color: {theme['number']}; }}"
+            f" QCheckBox {{ color: {theme['number']}; }}"
+            f" QPushButton {{ color: {theme['number']}; border: 1px solid {theme['tick']}; background-color: transparent; }}"
+        )
+        self.container.setStyleSheet(style)
+
+    def apply_ui_scale(self):
+        # UIのフォントとボタン幅をスケール
+        ui_font_size = max(10, int(12 * self.factor))
+        ui_font = QFont()
+        ui_font.setPixelSize(ui_font_size)
+        self.digital.setFont(ui_font)
+        self.size_button.setFont(ui_font)
+        self.color_button.setFont(ui_font)
+        self.auto_checkbox.setFont(ui_font)
+
+        # ボタンの横幅を「サイズヒントの半分」かつ「文字列幅+余白」を下回らないように設定
+        fm = QFontMetrics(ui_font)
+        def half_or_text(btn):
+            half = btn.sizeHint().width() // 2
+            text_w = fm.horizontalAdvance(btn.text()) + 24  # 左右余白
+            return max(40, max(half, text_w))
+        self.size_button.setFixedWidth(half_or_text(self.size_button))
+        self.color_button.setFixedWidth(half_or_text(self.color_button))
+
+    def log_state(self, source: str):
+        theme_name = "DARK" if self.is_dark_theme else "LIGHT"
+        auto = "ON" if self.is_auto_theme else "OFF"
+        print(f"{source} factor={self.factor:.2f}, clock={self.clock.width()}x{self.clock.height()}, window={self.width()}x{self.height()}, theme={theme_name}, auto={auto}")
+
+    def resize_to_content(self):
+        # 幾何情報を更新し、推奨サイズに合わせて縮小も許可
+        self.container.updateGeometry()
+        self.layout().activate()
+        self.container.adjustSize()
+        content = self.container.sizeHint()
+        frame_w = self.frameGeometry().width() - self.geometry().width()
+        frame_h = self.frameGeometry().height() - self.geometry().height()
+        self.resize(content.width() + frame_w, content.height() + frame_h)
 
     def on_auto_changed(self, state):
         self.is_auto_theme = bool(state)

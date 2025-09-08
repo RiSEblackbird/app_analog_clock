@@ -27,6 +27,7 @@ UPDATE_INTERVAL = 1000        # アナログ＆デジタル更新間隔
 AUTO_CHECK_INTERVAL_MS = 60000
 FONT_SIZE = 32
 FACTOR_FILE = Path("factor.txt")
+VOLUME_MAX_SCALE = 0.40  # UIの100%が実効40%になるように補正
 
 LIGHT_THEME = {
     "bg": "#ffffff",
@@ -211,7 +212,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"[warn] tick sound init failed: {e}")
         self.tick_effect.setLoopCount(1)
-        self.tick_effect.setVolume(self.volume_slider.value() / 100.0)
+        self.tick_effect.setVolume(self._scaled_volume(self.volume_slider.value()))
         # 初期の音量ラベル反映
         self.on_volume_changed(self.volume_slider.value())
 
@@ -339,13 +340,22 @@ class MainWindow(QMainWindow):
 
         # 無音から有効化時の即時反映（音量も適用）
         if hasattr(self, "tick_effect") and self.tick_effect is not None:
-            self.tick_effect.setVolume(self.volume_slider.value() / 100.0)
+            self.tick_effect.setVolume(self._scaled_volume(self.volume_slider.value()))
 
     def on_volume_changed(self, value: int):
         if hasattr(self, "tick_effect") and self.tick_effect is not None:
-            self.tick_effect.setVolume(max(0.0, min(1.0, value / 100.0)))
+            self.tick_effect.setVolume(self._scaled_volume(value))
         if hasattr(self, "volume_label"):
             self.volume_label.setText(f"{value}%")
+
+    def _scaled_volume(self, slider_value: int | float) -> float:
+        # 0-100のスライダー値を0-1へ正規化し、最大40%で打ち止め
+        try:
+            normalized = float(slider_value) / 100.0
+        except Exception:
+            normalized = 0.0
+        scaled = max(0.0, min(1.0, normalized * VOLUME_MAX_SCALE))
+        return scaled
 
     def ensure_tick_wav(self) -> Path:
         path = Path(__file__).parent / "tick.wav"

@@ -7,12 +7,13 @@ import math
 import time
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QPoint
+from PySide6.QtCore import Qt, QTimer, QPoint, QUrl
 from PySide6.QtGui import QPainter, QPen, QColor, QFont, QFontMetrics
 from PySide6.QtWidgets import (
     QApplication, QWidget, QMainWindow, QLabel, QPushButton,
-    QCheckBox, QHBoxLayout, QVBoxLayout, QLayout
+    QCheckBox, QHBoxLayout, QVBoxLayout, QLayout, QSlider
 )
+from PySide6.QtMultimedia import QSoundEffect
 
 # ---------------------- 定数 ----------------------
 WINDOW_SIZE = 400
@@ -136,10 +137,13 @@ class MainWindow(QMainWindow):
         self.is_dark_theme = False
         self.is_auto_theme = True
         self.factor = self.load_factor()
+        self.last_second = None
+        self.is_tick_sound = False
 
         self.clock = ClockWidget(self, self.factor)
-        self.digital = QLabel()
-        self.digital.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        # デジタル表示は時計上にオーバーレイ配置（2行目左端相当）
+        self.digital_label = QLabel(self.clock)
+        self.digital_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
         self.size_button = QPushButton("サイズ変更")
         self.size_button.clicked.connect(self.toggle_size)
@@ -151,15 +155,32 @@ class MainWindow(QMainWindow):
         self.auto_checkbox.setChecked(True)
         self.auto_checkbox.stateChanged.connect(self.on_auto_changed)
 
+        # 秒針音スイッチと音量
+        self.sound_checkbox = QCheckBox("秒針音")
+        self.sound_checkbox.setChecked(False)
+        self.sound_checkbox.stateChanged.connect(self.on_sound_changed)
+
+        self.volume_slider = QSlider(Qt.Horizontal)
+        self.volume_slider.setRange(0, 100)
+        self.volume_slider.setValue(50)
+        self.volume_slider.setTickInterval(10)
+        self.volume_slider.setTickPosition(QSlider.NoTicks)
+        self.volume_slider.valueChanged.connect(self.on_volume_changed)
+        self.volume_label = QLabel("50%")
+
         header = QHBoxLayout()
         # サイズ変更ボタンをデジタル時計の左側に配置
         header.addWidget(self.size_button)
-        header.addWidget(self.digital)
         header.addWidget(self.color_button)
         header.addWidget(self.auto_checkbox)
+        header.addWidget(self.sound_checkbox)
+        header.addWidget(self.volume_slider)
+        header.addWidget(self.volume_label)
 
         layout = QVBoxLayout()
         layout.setSizeConstraint(QLayout.SetDefaultConstraint)
+        layout.setSpacing(2)  # 行間を詰める
+        layout.setContentsMargins(6, 4, 6, 6)  # 余白を小さめに
         layout.addLayout(header)
         layout.addWidget(self.clock)
 
@@ -181,6 +202,18 @@ class MainWindow(QMainWindow):
         self.auto_timer.timeout.connect(self.apply_auto_theme)
         self.auto_timer.start(AUTO_CHECK_INTERVAL_MS)
         self.apply_auto_theme()
+
+        # 秒針音の初期化
+        self.tick_effect = QSoundEffect(self)
+        try:
+            tick_path = self.ensure_tick_wav()
+            self.tick_effect.setSource(QUrl.fromLocalFile(str(tick_path)))
+        except Exception as e:
+            print(f"[warn] tick sound init failed: {e}")
+        self.tick_effect.setLoopCount(1)
+        self.tick_effect.setVolume(self.volume_slider.value() / 100.0)
+        # 初期の音量ラベル反映
+        self.on_volume_changed(self.volume_slider.value())
 
     # -------- サイズ関連 --------
     def load_factor(self):
@@ -223,6 +256,8 @@ class MainWindow(QMainWindow):
             f" QLabel {{ color: {theme['number']}; }}"
             f" QCheckBox {{ color: {theme['number']}; }}"
             f" QPushButton {{ color: {theme['number']}; border: 1px solid {theme['tick']}; background-color: transparent; }}"
+            f" QSlider::groove:horizontal {{ background: {theme['tick']}; height: 4px; border-radius: 2px; }}"
+            f" QSlider::handle:horizontal {{ background: {theme['number']}; border: 1px solid {theme['tick']}; width: 12px; margin: -6px 0; border-radius: 6px; }}"
         )
         self.container.setStyleSheet(style)
 
@@ -231,10 +266,18 @@ class MainWindow(QMainWindow):
         ui_font_size = max(10, int(12 * self.factor))
         ui_font = QFont()
         ui_font.setPixelSize(ui_font_size)
-        self.digital.setFont(ui_font)
+        self.digital_label.setFont(ui_font)
         self.size_button.setFont(ui_font)
         self.color_button.setFont(ui_font)
         self.auto_checkbox.setFont(ui_font)
+        self.sound_checkbox.setFont(ui_font)
+        self.volume_label.setFont(ui_font)
+
+        # デジタル時計の位置を時計ウィジェット左上へ（より左に寄せる）
+        margin_x = max(2, int(4 * self.factor))
+        margin_y = max(2, int(6 * self.factor))
+        self.digital_label.move(margin_x, margin_y)
+        self.digital_label.raise_()
 
         # ボタンの横幅を「サイズヒントの半分」かつ「文字列幅+余白」を下回らないように設定
         fm = QFontMetrics(ui_font)
@@ -244,6 +287,9 @@ class MainWindow(QMainWindow):
             return max(40, max(half, text_w))
         self.size_button.setFixedWidth(half_or_text(self.size_button))
         self.color_button.setFixedWidth(half_or_text(self.color_button))
+        # スライダー幅をスケール
+        base_slider_w = 50
+        self.volume_slider.setFixedWidth(max(100, int(base_slider_w * self.factor)))
 
     def log_state(self, source: str):
         theme_name = "DARK" if self.is_dark_theme else "LIGHT"
@@ -274,7 +320,75 @@ class MainWindow(QMainWindow):
 
     # -------- デジタル表示 --------
     def update_datetime_label(self):
-        self.digital.setText(time.strftime("%Y-%m-%d %H:%M:%S"))
+        self.digital_label.setText(time.strftime("%Y-%m-%d %H:%M:%S"))
+        self.digital_label.adjustSize()
+        # 秒針音の再生（毎秒）
+        now = time.localtime()
+        current_second = now.tm_sec
+        if self.sound_checkbox.isChecked():
+            if self.last_second != current_second:
+                if hasattr(self, "tick_effect") and self.tick_effect is not None:
+                    if self.tick_effect.isPlaying():
+                        self.tick_effect.stop()
+                    self.tick_effect.play()
+        self.last_second = current_second
+
+    # -------- 秒針音関連 --------
+    def on_sound_changed(self, state):
+        self.is_tick_sound = bool(state)
+
+        # 無音から有効化時の即時反映（音量も適用）
+        if hasattr(self, "tick_effect") and self.tick_effect is not None:
+            self.tick_effect.setVolume(self.volume_slider.value() / 100.0)
+
+    def on_volume_changed(self, value: int):
+        if hasattr(self, "tick_effect") and self.tick_effect is not None:
+            self.tick_effect.setVolume(max(0.0, min(1.0, value / 100.0)))
+        if hasattr(self, "volume_label"):
+            self.volume_label.setText(f"{value}%")
+
+    def ensure_tick_wav(self) -> Path:
+        path = Path(__file__).parent / "tick.wav"
+        if not path.exists():
+            self.generate_tick_wav(path)
+        return path
+
+    def generate_tick_wav(self, path: Path):
+        # 機械式のクリックに近い短いインパルス＋減衰ノイズを合成
+        import wave
+        import struct
+        import random
+        sample_rate = 44100
+        duration_sec = 0.06
+        num_samples = int(sample_rate * duration_sec)
+        attack_samples = int(0.002 * sample_rate)   # 2ms 立ち上がり
+        decay_samples = num_samples - attack_samples
+        click_amp = 12000
+        noise_amp = 7000
+        # ハイパス気味のノイズ成分を入れてメカ感を演出
+        prev = 0.0
+        samples = []
+        for i in range(num_samples):
+            if i < attack_samples:
+                env = i / max(1, attack_samples)
+            else:
+                env = max(0.0, 1.0 - (i - attack_samples) / max(1, decay_samples))
+                env = env * env  # 急速減衰
+            # 小さなインパルス（矩形に近い）
+            impulse = click_amp * (1.0 if i < int(0.0015 * sample_rate) else 0.0)
+            # ハイパス風ノイズ（差分）
+            white = (random.random() * 2.0 - 1.0)
+            hp = white - prev
+            prev = white
+            val = impulse + noise_amp * hp * env
+            val = max(-32767, min(32767, int(val)))
+            samples.append(val)
+        with wave.open(str(path), 'w') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sample_rate)
+            for v in samples:
+                wf.writeframes(struct.pack('<h', v))
 
 # ---------------------- エントリポイント ----------------------
 def main():

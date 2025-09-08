@@ -27,7 +27,7 @@ UPDATE_INTERVAL = 1000        # アナログ＆デジタル更新間隔
 AUTO_CHECK_INTERVAL_MS = 60000
 FONT_SIZE = 32
 FACTOR_FILE = Path("factor.txt")
-VOLUME_MAX_SCALE = 0.40  # UIの100%が実効40%になるように補正
+VOLUME_MAX_SCALE = 0.25
 
 LIGHT_THEME = {
     "bg": "#ffffff",

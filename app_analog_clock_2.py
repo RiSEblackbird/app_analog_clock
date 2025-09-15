@@ -169,6 +169,10 @@ class MainWindow(QMainWindow):
         self.volume_slider.valueChanged.connect(self.on_volume_changed)
         self.volume_label = QLabel("50%")
 
+        self.always_on_top_checkbox = QCheckBox("常に手前", self.clock)
+        self.always_on_top_checkbox.setChecked(False)
+        self.always_on_top_checkbox.stateChanged.connect(self.on_always_on_top_changed)
+
         header = QHBoxLayout()
         # サイズ変更ボタンをデジタル時計の左側に配置
         header.addWidget(self.size_button)
@@ -177,6 +181,7 @@ class MainWindow(QMainWindow):
         header.addWidget(self.sound_checkbox)
         header.addWidget(self.volume_slider)
         header.addWidget(self.volume_label)
+        # 右端配置は時計ウィジェット上にオーバーレイで行うため、ヘッダーには追加しない
 
         layout = QVBoxLayout()
         layout.setSizeConstraint(QLayout.SetDefaultConstraint)
@@ -273,6 +278,9 @@ class MainWindow(QMainWindow):
         self.auto_checkbox.setFont(ui_font)
         self.sound_checkbox.setFont(ui_font)
         self.volume_label.setFont(ui_font)
+        self.always_on_top_checkbox.setFont(ui_font)
+        # フォントサイズ変更に伴い、チェックボックスの実サイズをテキストに合わせて更新
+        self.always_on_top_checkbox.adjustSize()
 
         # デジタル時計の位置を時計ウィジェット左上へ（より左に寄せる）
         margin_x = max(2, int(4 * self.factor))
@@ -291,6 +299,14 @@ class MainWindow(QMainWindow):
         # スライダー幅をスケール
         base_slider_w = 50
         self.volume_slider.setFixedWidth(max(100, int(base_slider_w * self.factor)))
+
+        # 「常に手前」チェックボックスを時計ウィジェット右上に配置
+        chk_w = self.always_on_top_checkbox.width()
+        chk_h = self.always_on_top_checkbox.height()
+        x = max(0, self.clock.width() - margin_x - chk_w)
+        y = margin_y
+        self.always_on_top_checkbox.move(x, y)
+        self.always_on_top_checkbox.raise_()
 
     def log_state(self, source: str):
         theme_name = "DARK" if self.is_dark_theme else "LIGHT"
@@ -318,6 +334,13 @@ class MainWindow(QMainWindow):
         hour = time.localtime().tm_hour
         self.is_dark_theme = (hour < 6 or hour >= 18)
         self.apply_theme()
+
+    # -------- 前面表示 --------
+    def on_always_on_top_changed(self, state):
+        is_top = bool(state)
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, is_top)
+        # フラグ変更を即時反映
+        self.show()
 
     # -------- デジタル表示 --------
     def update_datetime_label(self):

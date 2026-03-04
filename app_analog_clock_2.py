@@ -11,9 +11,9 @@ from PySide6.QtCore import Qt, QTimer, QPoint, QUrl
 from PySide6.QtGui import QPainter, QPen, QColor, QFont, QFontMetrics
 from PySide6.QtWidgets import (
     QApplication, QWidget, QMainWindow, QLabel, QPushButton,
-    QCheckBox, QHBoxLayout, QVBoxLayout, QLayout, QSlider
+    QCheckBox, QHBoxLayout, QVBoxLayout, QLayout, QSlider, QComboBox
 )
-from PySide6.QtMultimedia import QSoundEffect
+from PySide6.QtMultimedia import QSoundEffect, QMediaDevices, QAudioDevice
 
 # ---------------------- 定数 ----------------------
 WINDOW_SIZE = 400
@@ -173,6 +173,16 @@ class MainWindow(QMainWindow):
         self.always_on_top_checkbox.setChecked(False)
         self.always_on_top_checkbox.stateChanged.connect(self.on_always_on_top_changed)
 
+        # 音声出力デバイス選択コンボボックス
+        self.device_combo = QComboBox()
+        self._populate_device_combo()
+        self.device_combo.currentIndexChanged.connect(self.on_audio_device_changed)
+
+        # システムのデバイス構成変化（Bluetooth/USB接続・切断など）を購読
+        # QMediaDevices はインスタンスを通じてシグナルを発行する
+        self._media_devices_watcher = QMediaDevices(self)
+        self._media_devices_watcher.audioOutputsChanged.connect(self._refresh_device_combo)
+
         header = QHBoxLayout()
         # サイズ変更ボタンをデジタル時計の左側に配置
         header.addWidget(self.size_button)
@@ -181,6 +191,7 @@ class MainWindow(QMainWindow):
         header.addWidget(self.sound_checkbox)
         header.addWidget(self.volume_slider)
         header.addWidget(self.volume_label)
+        header.addWidget(self.device_combo)
         # 右端配置は時計ウィジェット上にオーバーレイで行うため、ヘッダーには追加しない
 
         layout = QVBoxLayout()
@@ -264,6 +275,8 @@ class MainWindow(QMainWindow):
             f" QPushButton {{ color: {theme['number']}; border: 1px solid {theme['tick']}; background-color: transparent; }}"
             f" QSlider::groove:horizontal {{ background: {theme['tick']}; height: 4px; border-radius: 2px; }}"
             f" QSlider::handle:horizontal {{ background: {theme['number']}; border: 1px solid {theme['tick']}; width: 12px; margin: -6px 0; border-radius: 6px; }}"
+            f" QComboBox {{ color: {theme['number']}; border: 1px solid {theme['tick']}; background-color: transparent; padding: 1px 4px; }}"
+            f" QComboBox QAbstractItemView {{ color: {theme['number']}; background-color: {theme['bg']}; selection-background-color: {theme['tick']}; }}"
         )
         self.container.setStyleSheet(style)
 
@@ -279,6 +292,7 @@ class MainWindow(QMainWindow):
         self.sound_checkbox.setFont(ui_font)
         self.volume_label.setFont(ui_font)
         self.always_on_top_checkbox.setFont(ui_font)
+        self.device_combo.setFont(ui_font)
         # フォントサイズ変更に伴い、チェックボックスの実サイズをテキストに合わせて更新
         self.always_on_top_checkbox.adjustSize()
 
@@ -299,6 +313,8 @@ class MainWindow(QMainWindow):
         # スライダー幅をスケール
         base_slider_w = 50
         self.volume_slider.setFixedWidth(max(100, int(base_slider_w * self.factor)))
+        # デバイスコンボの最大幅をスケール（長いデバイス名はtooltipで確認）
+        self.device_combo.setMaximumWidth(max(80, int(100 * self.factor)))
 
         # 「常に手前」チェックボックスを時計ウィジェット右上に配置
         chk_w = self.always_on_top_checkbox.width()
@@ -379,6 +395,80 @@ class MainWindow(QMainWindow):
             normalized = 0.0
         scaled = max(0.0, min(1.0, normalized * VOLUME_MAX_SCALE))
         return scaled
+
+    # -------- 音声デバイス関連 --------
+    def _populate_device_combo(self, preferred_id=None) -> tuple[int, bool]:
+        """音声出力デバイス一覧をコンボボックスに構築する。
+
+        preferred_id が指定された場合はそのデバイスを優先選択し、
+        見つからない場合はシステム既定デバイスを選択する。
+
+        Returns:
+            (select_index, preferred_found): 選択インデックスと優先デバイスが見つかったか
+        """
+        self.device_combo.blockSignals(True)
+        self.device_combo.clear()
+        devices = QMediaDevices.audioOutputs()
+        default_device = QMediaDevices.defaultAudioOutput()
+        default_index = 0
+        preferred_found_index = -1
+        for i, device in enumerate(devices):
+            self.device_combo.addItem(device.description(), device)
+            if device.id() == default_device.id():
+                default_index = i
+            if preferred_id is not None and device.id() == preferred_id:
+                preferred_found_index = i
+        select_index = preferred_found_index if preferred_found_index >= 0 else default_index
+        if self.device_combo.count() > 0:
+            self.device_combo.setCurrentIndex(select_index)
+            sel_device = self.device_combo.itemData(select_index)
+            if sel_device:
+                self.device_combo.setToolTip(sel_device.description())
+        self.device_combo.blockSignals(False)
+        return select_index, preferred_found_index >= 0
+
+    def _refresh_device_combo(self):
+        """システムの音声出力デバイス構成変化に応じてプルダウンを再構築する。
+
+        選択中のデバイスが存続する場合は選択を維持する。
+        デバイスが消えた場合（切断など）はシステム既定へ切替え、
+        tick_effect も新デバイスで再生成する。
+        """
+        current_id = None
+        current_data = self.device_combo.currentData()
+        if isinstance(current_data, QAudioDevice):
+            current_id = current_data.id()
+
+        select_index, preferred_found = self._populate_device_combo(preferred_id=current_id)
+
+        # 元のデバイスが消えた場合は tick_effect を新デバイスで再生成
+        if current_id is not None and not preferred_found:
+            self.on_audio_device_changed(select_index)
+
+    def on_audio_device_changed(self, index: int):
+        """音声出力デバイスを切り替える。
+        QSoundEffect はデバイスをコンストラクタで受け取る設計のため、
+        デバイス変更時はインスタンスを再生成する。"""
+        device: QAudioDevice = self.device_combo.itemData(index)
+        if device is None:
+            return
+
+        # 現在の再生設定を保存してから旧インスタンスを破棄
+        volume = self._scaled_volume(self.volume_slider.value())
+        old_source = QUrl()
+        if hasattr(self, "tick_effect") and self.tick_effect is not None:
+            old_source = self.tick_effect.source()
+            self.tick_effect.stop()
+            self.tick_effect.deleteLater()
+
+        # 選択デバイスで QSoundEffect を再生成
+        new_effect = QSoundEffect(device, self)
+        new_effect.setSource(old_source)
+        new_effect.setLoopCount(1)
+        new_effect.setVolume(volume)
+        self.tick_effect = new_effect
+
+        self.device_combo.setToolTip(device.description())
 
     def ensure_tick_wav(self) -> Path:
         path = Path(__file__).parent / "tick.wav"
